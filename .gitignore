@@ -1,0 +1,26 @@
+# Ignore compiled Python files
+*.pyc
+__pycache__/
+
+# Ignore generated addon zip files
+*.zip
+
+# Ignore Blender backup files
+*.blend1
+*.blend2
+*.blend~
+
+# Ignore generated documentation files
+docs/
+
+# Ignore any local or user-specific configuration files
+*.ini
+*.prefs
+*.bforartists
+*.blender
+
+# Ignore compiled binaries or executables
+*.exe
+*.dll
+*.so
+*.dylib
