@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Lightmap Baker",
     "author": "Fairplex",
-    "version": (1, 0, 0),
+    "version": (0, 1, 3),
     "blender": (4, 0, 0),
     "location": "3DView > Render > BakeTool",
     "description": "Bake Solution for Cycles",
