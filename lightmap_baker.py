@@ -16,6 +16,7 @@ def bake_diffuse(context, obj):
     # Adjust bake settings
     context.scene.render.bake.use_pass_direct = True
     context.scene.render.bake.use_pass_indirect = True
+    context.scene.render.bake.margin = context.scene.lightmap_baker_margin
 
     bpy.ops.object.bake('INVOKE_DEFAULT', type='DIFFUSE', use_clear=False)
 
@@ -129,6 +130,8 @@ class Operator(bpy.types.Operator):
         # Reset Bake Progression and index
         context.scene.lightmap_baker_progress = 0.0
         context.scene.lightmap_baker_objects_index = 0
+
+        clear_baked_texture(context)
 
         # Check if any selected object is missing the second UV map
         objects_to_bake = [obj_name.object for obj_name in context.scene.lightmap_baker_objects]
@@ -253,7 +256,7 @@ class LightmapBakerProperties(bpy.types.PropertyGroup):
     )
 
     export_after_bake: bpy.props.BoolProperty(
-        name="Export After Bake",
+        name="Export Texture",
         description="Export lightmap image after baking",
         default=False,
     )
@@ -286,9 +289,9 @@ class LightmapBakerProperties(bpy.types.PropertyGroup):
     lightmap_baker_render_device: bpy.props.EnumProperty(
         items=[
             ('CPU', 'CPU', 'Render using CPU'),
-            ('GPU', 'GPU', 'Render using GPU'),
+            ('GPU', 'GPU Compute', 'Render using GPU'),
         ],
-        name="Render Device",
+        name="Device",
         description="Choose render device",
         default='GPU',
     )
@@ -298,6 +301,14 @@ class LightmapBakerProperties(bpy.types.PropertyGroup):
         description="Number of samples for baking",
         default=128,
         min=1,
+    )
+
+    lightmap_baker_margin = bpy.props.IntProperty(
+        name="Margin",
+        default=6,
+        min=0,
+        max=64,
+        description="Extend the baked result as a post process filter",
     )
 
 
@@ -342,9 +353,15 @@ class OBJECT_OT_remove_all_from_bake_list(bpy.types.Operator):
         context.scene.lightmap_baker_objects.clear()
         return {'FINISHED'}
 
-class PT_Panel(bpy.types.Panel):
+class MAIN_PANEL:
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Main Tab"
+    bl_options = {"DEFAULT_CLOSED"}
+
+class LIGHTMAPBAKER_PT_PANEL(bpy.types.Panel):
     bl_label = "Lightmap Baker"
-    bl_idname = "LIGHTMAPBAKER_PT_B"
+    bl_idname = "LIGHTMAPBAKER_PT_Panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'Lightmap Baker'
@@ -352,8 +369,14 @@ class PT_Panel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
 
-        # Objects section
-        layout.label(text="Objects:")
+
+class OBJECT_PT_PANEL(MAIN_PANEL, bpy.types.Panel):
+    bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
+    bl_label = "Objects"
+
+    def draw(self, context):
+        layout = self.layout
+
         row = layout.row(align=True)
         row.operator("object.add_to_bake_list", text="Add Objects")
         row.operator("object.clear_bake_list", text="Clear List")
@@ -374,42 +397,56 @@ class PT_Panel(bpy.types.Panel):
         # Switch UV Index button
         row = layout.row(align=True)
         row.label(icon='GROUP_UVS', text="Active UV:")
-        row.prop(context.scene.active_uv_map_index, "lightmap_baker_uv_map_index", text="")
+        row.prop(context.scene.active_uv_map_index, "lightmap_baker_uv_map_index", text="", emboss=True)
         
         # Button to clean lightmap nodes and Lightmap UVs
         row = layout.row(align=True)
         row.operator("object.clean_lightmap_nodes", text="Remove Lightmap Nodes")
 
-        # Bake Settings section
-        layout.label(text="Bake Settings:")
-        row = layout.row(align=True)
-        row.label(text="Texture Name:")
-        row.prop(context.scene, "lightmap_baker_texture_name", text="")
+class SETTINGS_PT_PANEL(MAIN_PANEL, bpy.types.Panel):
+    bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
+    bl_label = "Settings"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Lightmap Baker'
 
-        # Add a margin option
-        row = layout.row(align=True)
-        row.label(text="Margin:")
-        row.prop(context.scene, "lightmap_baker_margin", text="")
+    def draw(self, context):
 
-        # Export options
-        row = layout.row(align=True)
-        row.prop(context.scene.only_lightmap_preview, "export_after_bake", text="Export After Bake")
-        if context.scene.only_lightmap_preview.export_after_bake:
-            row = layout.row(align=True)
-            row.prop(context.scene.only_lightmap_preview, "export_path", text="Export Path")
+        layout = self.layout
 
-        layout.separator()
         row = layout.row(align=True)
         row.label(text="Resolution:")
         row.prop(context.scene, "lightmap_baker_resolution", text="")
 
         row = layout.row(align=True)
-        row.label(text="Render Device:")
+        row.label(text="Device:")
         row.prop(context.scene, "lightmap_baker_render_device", text="", toggle=True)
         
         row = layout.row(align=True)
         row.label(text="Sample Count:")
         row.prop(context.scene, "lightmap_baker_sample_count", text="")
+
+        # Add a margin option with a label in front
+        row = layout.row(align=True)
+        row.label(text="Margin:")
+        row.prop(context.scene, "lightmap_baker_margin", text="")
+
+class OUTPUT_PT_PANEL(MAIN_PANEL, bpy.types.Panel):
+    bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
+    bl_label = "Output"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Lightmap Baker'
+
+    def draw(self, context):
+        layout = self.layout
+
+        # Export options
+        row = layout.row(align=True)
+        row.prop(context.scene.only_lightmap_preview, "export_after_bake", text="Export Texture")
+        if context.scene.only_lightmap_preview.export_after_bake:
+            row = layout.row(align=True)
+            row.prop(context.scene.only_lightmap_preview, "export_path", text="Export Path")
 
         # Bake
         layout.separator()
@@ -638,7 +675,12 @@ def register():
     bpy.utils.register_class(SelectAllInListOperator)
     bpy.utils.register_class(OBJECT_UL_bake_list)
     bpy.utils.register_class(Operator)
-    bpy.utils.register_class(PT_Panel)
+
+    bpy.utils.register_class(LIGHTMAPBAKER_PT_PANEL)
+    bpy.utils.register_class(OBJECT_PT_PANEL)
+    bpy.utils.register_class(SETTINGS_PT_PANEL)
+    bpy.utils.register_class(OUTPUT_PT_PANEL)
+
     bpy.utils.register_class(AddToBakeListOperator)
     bpy.utils.register_class(LightmapBakerObjectsProperty)
     bpy.utils.register_class(LightmapBakerProperties)
@@ -646,6 +688,15 @@ def register():
     bpy.types.Scene.active_uv_map_index = bpy.props.PointerProperty(type=LightmapBakerProperties)
     bpy.utils.register_class(CleanLightmapNodesOperator)
     bpy.types.Scene.lightmap_baker_objects = bpy.props.CollectionProperty(type=LightmapBakerObjectsProperty)
+
+    # Add this line outside of any class definition
+    bpy.types.Scene.lightmap_baker_margin = bpy.props.IntProperty(
+        name="Margin",
+        default=6,
+        min=0,
+        max=64,
+        description="Extend the baked result as a post process filter",
+    )
 
     bpy.types.Scene.lightmap_baker_uv_map_index = bpy.props.IntProperty(
         name="Active UV Map Index",
@@ -690,9 +741,9 @@ def register():
     bpy.types.Scene.lightmap_baker_render_device = bpy.props.EnumProperty(
         items=[
             ('CPU', 'CPU', 'Render using CPU'),
-            ('GPU', 'GPU', 'Render using GPU'),
+            ('GPU', 'GPU Compute', 'Render using GPU'),
         ],
-        name="Render Device",
+        name="Device",
         description="Choose render device",
         default='GPU',
     )
@@ -724,8 +775,13 @@ def unregister():
     bpy.utils.unregister_class(AddLightmapUVOperator)
     bpy.utils.unregister_class(SelectAllInListOperator)
     bpy.utils.unregister_class(OBJECT_UL_bake_list)
+
+    bpy.utils.unregister_class(LIGHTMAPBAKER_PT_PANEL)
+    bpy.utils.unregister_class(OBJECT_PT_PANEL)
+    bpy.utils.unregister_class(SETTINGS_PT_PANEL)
+    bpy.utils.unregister_class(OUTPUT_PT_PANEL)
+
     bpy.utils.unregister_class(Operator)
-    bpy.utils.unregister_class(PT_Panel)
     bpy.utils.unregister_class(AddToBakeListOperator)
     bpy.utils.unregister_class(LightmapBakerObjectsProperty)
     bpy.utils.unregister_class(LightmapBakerProperties)
