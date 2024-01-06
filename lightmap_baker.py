@@ -34,16 +34,18 @@ def clear_baked_texture(context):
         image.update()
 
 def lightmap_preview_diffuse(self, context):
-    for obj_name in context.scene.lightmap_baker_objects:
-        obj = bpy.data.objects.get(obj_name.object)
-        if obj:
+    for obj in bpy.context.scene.objects:
+        if obj.type == 'MESH':
             material = obj.active_material
-            texture_node = material.node_tree.nodes.get("Bake_Texture_Node")           
-            # If there's no texture node, there's nothing to preview
-            if context.scene.lightmap_baker_preview_diffuse:
-                connect_lightmap_to_shader_output(material, texture_node)
-            else:
-                disconnect_lightmap_from_shader_output(material)
+            if material:
+                texture_node = material.node_tree.nodes.get("Bake_Texture_Node")
+
+                # Check if the texture node exists in the material's node tree
+                if texture_node:
+                    if context.scene.lightmap_baker_preview_diffuse:
+                        connect_lightmap_to_shader_output(material, texture_node)
+                    else:
+                        disconnect_lightmap_from_shader_output(material)
 
 def create_texture_node(mat, new_image, uvmap_node):
     nodes = mat.node_tree.nodes
@@ -358,21 +360,24 @@ class LIGHTMAPBAKER_TOGGLE_LIGHTMAP_PREVIEW_DIFFUSE(bpy.types.Operator):
     bl_label = "Toggle Lightmap Diffuse Only"
 
     def execute(self, context):
-        context.scene.lightmap_baker_preview_diffuse = not context.scene.lightmap_baker_preview_diffuse
+        has_lightmap = False
 
-        for obj_name in context.scene.lightmap_baker_objects:
-            obj = bpy.data.objects.get(obj_name.object)
-            if obj:
+        # Loop through all objects in the scene
+        for obj in bpy.context.scene.objects:
+            if obj.type == 'MESH':
                 material = obj.active_material
-                texture_node = material.node_tree.nodes.get("Bake_Texture_Node")           
+                if material:
+                    texture_node = material.node_tree.nodes.get("Bake_Texture_Node")
+                    if texture_node:
+                        has_lightmap = True
+                        break  # Exit the loop if at least one object has a lightmap
 
-                if texture_node is None:
-                    self.report({'ERROR'}, "No Bake_Texture_Node found. Please bake first.")
-                    context.scene.lightmap_baker_preview_diffuse = False
-                    return {'CANCELLED'}
+        if not has_lightmap:
+            self.report({'ERROR'}, "Nothing to preview :(")
+            return {'CANCELLED'}
 
+        context.scene.lightmap_baker_preview_diffuse = not context.scene.lightmap_baker_preview_diffuse
         lightmap_preview_diffuse(self, context)
-                
         return {'FINISHED'}
 
 class MAIN_PANEL:
@@ -423,7 +428,7 @@ class OBJECT_PT_PANEL(MAIN_PANEL, bpy.types.Panel):
         
         # Button to clean lightmap nodes and Lightmap UVs
         row = layout.row(align=True)
-        row.operator("object.clean_lightmap_nodes", text="Remove Lightmap Nodes")
+        row.operator("object.remove_lightmap_nodes", text="Remove Lightmap Nodes")
 
 class SETTINGS_PT_PANEL(MAIN_PANEL, bpy.types.Panel):
     bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
@@ -464,11 +469,11 @@ class OUTPUT_PT_PANEL(MAIN_PANEL, bpy.types.Panel):
         layout = self.layout
 
         # Export options
-        row = layout.row(align=True)
-        row.prop(context.scene.only_lightmap_preview, "export_after_bake", text="Export Texture")
-        if context.scene.only_lightmap_preview.export_after_bake:
-            row = layout.row(align=True)
-            row.prop(context.scene.only_lightmap_preview, "export_path", text="Export Path")
+        # row = layout.row(align=True)
+        # row.prop(context.scene.only_lightmap_preview, "export_after_bake", text="Export Texture")
+        # if context.scene.only_lightmap_preview.export_after_bake:
+        #     row = layout.row(align=True)
+        #     row.prop(context.scene.only_lightmap_preview, "export_path", text="Export Path")
 
         # Bake
         layout.separator()
@@ -517,9 +522,10 @@ class LightmapBakerObjectsProperty(bpy.types.PropertyGroup):
     object: bpy.props.StringProperty()
 
     
-class CleanLightmapNodesOperator(bpy.types.Operator):
-    bl_idname = "object.clean_lightmap_nodes"
-    bl_label = "Clean Lightmap Nodes"
+class LIGHTMAPBAKER_REMOVE_LIGHTMAP_NODES(bpy.types.Operator):
+    bl_idname = "object.remove_lightmap_nodes"
+    bl_label = "Remove Lightmap Nodes"
+    bl_description = "Remove lightmap nodes"
 
     def execute(self, context):
         all_materials = bpy.data.materials
@@ -552,6 +558,9 @@ class CleanLightmapNodesOperator(bpy.types.Operator):
                 if shader_output:
                     shader_input = material.node_tree.nodes["Material Output"].inputs["Surface"]
                     material.node_tree.links.new(shader_output, shader_input)
+
+        print("A")
+        context.scene.lightmap_baker_preview_diffuse = False
 
         return {'FINISHED'}
 
@@ -709,7 +718,7 @@ def register():
     bpy.utils.register_class(LightmapBakerProperties)
     bpy.types.Scene.toggle_lightmap_preview_diffuse = bpy.props.PointerProperty(type=LightmapBakerProperties)
     bpy.types.Scene.active_uv_map_index = bpy.props.PointerProperty(type=LightmapBakerProperties)
-    bpy.utils.register_class(CleanLightmapNodesOperator)
+    bpy.utils.register_class(LIGHTMAPBAKER_REMOVE_LIGHTMAP_NODES)
     bpy.types.Scene.lightmap_baker_objects = bpy.props.CollectionProperty(type=LightmapBakerObjectsProperty)
 
     # Add this line outside of any class definition
@@ -806,7 +815,7 @@ def unregister():
     bpy.utils.unregister_class(Operator)
     bpy.utils.unregister_class(AddToBakeListOperator)
     bpy.utils.unregister_class(LightmapBakerObjectsProperty)
-    bpy.utils.unregister_class(CleanLightmapNodesOperator)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_REMOVE_LIGHTMAP_NODES)
     bpy.utils.unregister_class(LightmapBakerProperties)
 
     del bpy.types.Scene.lightmap_baker_objects_index
