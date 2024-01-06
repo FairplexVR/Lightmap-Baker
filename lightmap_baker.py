@@ -1,4 +1,5 @@
 import bpy
+import time
 
 bake_in_progress = False
 
@@ -23,7 +24,6 @@ def bake_diffuse(context, obj):
 def on_complete(dummy):
     global bake_in_progress
     bake_in_progress = False
-
 
 def clear_baked_texture(context):
     # Clear the baked texture by setting all pixels to black
@@ -115,8 +115,222 @@ def find_shader_output_node(material):
     else:
         print("Error: No MIX_SHADER, ADD_SHADER, or BSDF nodes found.")
         return None
-    
-class Operator(bpy.types.Operator):
+
+
+class LIGHTMAPBAKER_properties(bpy.types.PropertyGroup):
+    lightmap_baker_objects_index: bpy.props.IntProperty(
+        name="Index",
+        description="Index of the selected object in the bake list",
+        default=0,
+    )
+
+    lightmap_baker_preview_diffuse: bpy.props.BoolProperty(
+        name="Toggle Lightmap Preview",
+        description="Show only lightmaps on the surface",
+        default=False,
+    )
+
+    lightmap_baker_uv_map_index: bpy.props.IntProperty(
+        name="Active UV Map Index",
+        description="Active UV Map Index",
+        default=0,
+        min=0,
+        max=1,
+        update=update_active_uv_map_index,
+    )
+
+    export_after_bake: bpy.props.BoolProperty(
+        name="Export Texture",
+        description="Export lightmap image after baking",
+        default=False,
+    )
+
+    export_path: bpy.props.StringProperty(
+        name="Export Path",
+        description="Path for exporting lightmap image",
+        default="",
+        subtype='FILE_PATH',
+    )
+
+    lightmap_baker_resolution: bpy.props.EnumProperty(
+        items=[
+            ('512', '512', 'Bake at 512x512 resolution'),
+            ('1024', '1024', 'Bake at 1024x1024 resolution'),
+            ('2048', '2048', 'Bake at 2048x2048 resolution'),
+            ('4096', '4096', 'Bake at 4096x4096 resolution'),
+        ],
+        name="Resolution",
+        description="Choose bake resolution",
+        default='1024',
+    )
+
+    lightmap_baker_texture_name: bpy.props.StringProperty(
+        name="Texture Name",
+        description="Name of the baked lightmap texture",
+        default=""
+    )
+
+    lightmap_baker_render_device: bpy.props.EnumProperty(
+        items=[
+            ('CPU', 'CPU', 'Render using CPU'),
+            ('GPU', 'GPU Compute', 'Render using GPU'),
+        ],
+        name="Device",
+        description="Choose render device",
+        default='GPU',
+    )
+
+    lightmap_baker_sample_count: bpy.props.IntProperty(
+        name="Sample Count",
+        description="Number of samples for baking",
+        default=128,
+        min=1,
+    )
+
+    lightmap_baker_margin = bpy.props.IntProperty(
+        name="Margin",
+        default=6,
+        min=0,
+        max=64,
+        description="Extend the baked result as a post process filter",
+    )
+
+class LIGHTMAPBAKER_objects_properties(bpy.types.PropertyGroup):
+    object: bpy.props.StringProperty()
+
+
+class LIGHTMAPBAKER_PT_main:
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Main Tab"
+    bl_options = {"HEADER_LAYOUT_EXPAND"}
+
+class LIGHTMAPBAKER_PT_title(bpy.types.Panel):
+    bl_label = "Lightmap Baker"
+    bl_idname = "LIGHTMAPBAKER_PT_Panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Lightmap Baker'
+
+    def draw(self, context):
+        layout = self.layout
+
+class LIGHTMAPBAKER_PT_objects(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
+    bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
+    bl_label = "Objects"
+
+    def draw(self, context):
+        layout = self.layout
+
+        row = layout.row(align=True)
+        row.operator("object.add_to_bake_list", text="Add Objects")
+        row.operator("object.clear_bake_list", text="Clear List")
+
+        layout.template_list("LIGHTMAPBAKER_UL_objects_list", "", context.scene, "lightmap_baker_objects",
+                             context.scene, "lightmap_baker_objects_index")
+
+        # Add a button to clean all invalid objects at once
+        row.operator("object.clean_all_invalid_objects", text="", icon='BRUSH_DATA')
+
+        # Add a button to select all objects in the list
+        layout.operator("object.select_all_in_list", text="Select All in List")
+
+        # Add Lightmap UV button
+        row = layout.row(align=True)
+        row.operator("object.add_lightmap_uv", text="Add Lightmap UV")
+
+        # Switch UV Index button
+        row = layout.row(align=True)
+        row.label(icon='GROUP_UVS', text="Active UV:")
+        row.prop(context.scene.active_uv_map_index, "lightmap_baker_uv_map_index", text="", emboss=True)
+        
+        # Button to clean lightmap nodes and Lightmap UVs
+        row = layout.row(align=True)
+        row.operator("object.remove_lightmap_nodes", text="Remove Lightmap Nodes")
+
+class LIGHTMAPBAKER_PT_settings(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
+    bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
+    bl_label = "Settings"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Lightmap Baker'
+
+    def draw(self, context):
+
+        layout = self.layout
+
+        row = layout.row(align=True)
+        row.label(text="Resolution:")
+        row.prop(context.scene, "lightmap_baker_resolution", text="")
+
+        row = layout.row(align=True)
+        row.label(text="Device:")
+        row.prop(context.scene, "lightmap_baker_render_device", text="", toggle=True)
+        
+        row = layout.row(align=True)
+        row.label(text="Sample Count:")
+        row.prop(context.scene, "lightmap_baker_sample_count", text="")
+
+        # Add a margin option with a label in front
+        row = layout.row(align=True)
+        row.label(text="Margin:")
+        row.prop(context.scene, "lightmap_baker_margin", text="")
+
+class LIGHTMAPBAKER_PT_output(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
+    bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
+    bl_label = "Output"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Lightmap Baker'
+
+    def draw(self, context):
+        layout = self.layout
+
+        # Export options
+        # row = layout.row(align=True)
+        # row.prop(context.scene.only_lightmap_preview, "export_after_bake", text="Export Texture")
+        # if context.scene.only_lightmap_preview.export_after_bake:
+        #     row = layout.row(align=True)
+        #     row.prop(context.scene.only_lightmap_preview, "export_path", text="Export Path")
+
+        # Bake
+        layout.separator()
+        row = layout.row(align=True)
+        sub_row = row.row(align=True)
+        sub_row.scale_y = 1.5  # Adjust the scale factor as needed
+        sub_row.operator("object.bake_operator", text="Bake!", emboss=True)
+
+        # Add Lightmap Preview toggle button to the right of the Bake button
+        sub_row.scale_x = 2.0  # Adjust the scale factor for the icon             
+        sub_row.operator("object.toggle_lightmap_preview_diffuse", text="", icon='SHADING_RENDERED', depress=context.scene.lightmap_baker_preview_diffuse)
+
+        # Baking Progress
+        current_index = context.scene.lightmap_baker_objects_index
+        total_objects = len(context.scene.lightmap_baker_objects)
+        progress_value = context.scene.lightmap_baker_progress * 100
+           
+        if bake_in_progress:
+            layout.progress(factor=context.scene.lightmap_baker_progress, text=f"{progress_value:.0f}% ({current_index}/{total_objects} Objects)")
+        elif progress_value == 0.0:
+            layout.progress(text=f"({0}/{total_objects} Objects)")
+        else:
+            layout.progress(factor=context.scene.lightmap_baker_progress, text="Completed!")
+
+        # Calculate and display elapsed time
+        layout.label(text=f"Elapsed Time: ")
+
+
+class LIGHTMAPBAKER_UL_objects_list(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        obj = bpy.data.objects.get(item.object)
+        if obj:
+            layout.label(text=obj.name, icon='OBJECT_DATAMODE')
+            layout.operator("object.remove_single_from_bake_list", text="", icon='X').index = index  # Change here
+        else:
+            layout.label(text="Invalid Object", icon='ERROR')
+
+
+class LIGHTMAPBAKER_OT_bake(bpy.types.Operator):
     bl_idname = "object.bake_operator"
     bl_label = "Bake!"
     bl_description = "Bake objects in the list"
@@ -124,6 +338,8 @@ class Operator(bpy.types.Operator):
 
     def execute(self, context):
         global bake_in_progress
+
+        time_start = time.time()
         
         # Cancel if the list ist empty
         if len(context.scene.lightmap_baker_objects) == 0:
@@ -235,98 +451,10 @@ class Operator(bpy.types.Operator):
             bpy.ops.wm.simple_modal_operator('INVOKE_DEFAULT')
             bake_in_progress = True
     
+            print("My Script Finished: %.4f sec" % (time.time() - time_start))
             return {'FINISHED'}
 
-class LightmapBakerProperties(bpy.types.PropertyGroup):
-    lightmap_baker_objects_index: bpy.props.IntProperty(
-        name="Index",
-        description="Index of the selected object in the bake list",
-        default=0,
-    )
-
-    lightmap_baker_preview_diffuse: bpy.props.BoolProperty(
-        name="Toggle Lightmap Preview",
-        description="Show only lightmaps on the surface",
-        default=False,
-    )
-
-    lightmap_baker_uv_map_index: bpy.props.IntProperty(
-        name="Active UV Map Index",
-        description="Active UV Map Index",
-        default=0,
-        min=0,
-        max=1,
-        update=update_active_uv_map_index,
-    )
-
-    export_after_bake: bpy.props.BoolProperty(
-        name="Export Texture",
-        description="Export lightmap image after baking",
-        default=False,
-    )
-
-    export_path: bpy.props.StringProperty(
-        name="Export Path",
-        description="Path for exporting lightmap image",
-        default="",
-        subtype='FILE_PATH',
-    )
-
-    lightmap_baker_resolution: bpy.props.EnumProperty(
-        items=[
-            ('512', '512', 'Bake at 512x512 resolution'),
-            ('1024', '1024', 'Bake at 1024x1024 resolution'),
-            ('2048', '2048', 'Bake at 2048x2048 resolution'),
-            ('4096', '4096', 'Bake at 4096x4096 resolution'),
-        ],
-        name="Resolution",
-        description="Choose bake resolution",
-        default='1024',
-    )
-
-    lightmap_baker_texture_name: bpy.props.StringProperty(
-        name="Texture Name",
-        description="Name of the baked lightmap texture",
-        default=""
-    )
-
-    lightmap_baker_render_device: bpy.props.EnumProperty(
-        items=[
-            ('CPU', 'CPU', 'Render using CPU'),
-            ('GPU', 'GPU Compute', 'Render using GPU'),
-        ],
-        name="Device",
-        description="Choose render device",
-        default='GPU',
-    )
-
-    lightmap_baker_sample_count: bpy.props.IntProperty(
-        name="Sample Count",
-        description="Number of samples for baking",
-        default=128,
-        min=1,
-    )
-
-    lightmap_baker_margin = bpy.props.IntProperty(
-        name="Margin",
-        default=6,
-        min=0,
-        max=64,
-        description="Extend the baked result as a post process filter",
-    )
-
-
-class OBJECT_UL_bake_list(bpy.types.UIList):
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        obj = bpy.data.objects.get(item.object)
-        if obj:
-            layout.label(text=obj.name, icon='OBJECT_DATAMODE')
-            layout.operator("object.remove_single_from_bake_list", text="", icon='X').index = index  # Change here
-        else:
-            layout.label(text="Invalid Object", icon='ERROR')
-
-
-class OBJECT_OT_remove_single_from_bake_list(bpy.types.Operator):
+class LIGHTMAPBAKER_OT_remove_single_from_bake_list(bpy.types.Operator):
     bl_idname = "object.remove_single_from_bake_list"
     bl_label = "Remove Object from Bake List"
 
@@ -347,7 +475,7 @@ class OBJECT_OT_remove_single_from_bake_list(bpy.types.Operator):
 
         return {'FINISHED'}
 
-class OBJECT_OT_remove_all_from_bake_list(bpy.types.Operator):
+class LIGHTMAPBAKER_OT_remove_all_from_bake_list(bpy.types.Operator):
     bl_idname = "object.clear_bake_list"
     bl_label = "Clear List"
 
@@ -355,7 +483,7 @@ class OBJECT_OT_remove_all_from_bake_list(bpy.types.Operator):
         context.scene.lightmap_baker_objects.clear()
         return {'FINISHED'}
 
-class LIGHTMAPBAKER_TOGGLE_LIGHTMAP_PREVIEW_DIFFUSE(bpy.types.Operator):
+class LIGHTMAPBAKER_OT_toggle_lightmap_preview_diffuse(bpy.types.Operator):
     bl_idname = "object.toggle_lightmap_preview_diffuse"
     bl_label = "Toggle Lightmap Diffuse Only"
 
@@ -380,128 +508,7 @@ class LIGHTMAPBAKER_TOGGLE_LIGHTMAP_PREVIEW_DIFFUSE(bpy.types.Operator):
         lightmap_preview_diffuse(self, context)
         return {'FINISHED'}
 
-class MAIN_PANEL:
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "Main Tab"
-    bl_options = {"DEFAULT_CLOSED"}
-
-class LIGHTMAPBAKER_PT_PANEL(bpy.types.Panel):
-    bl_label = "Lightmap Baker"
-    bl_idname = "LIGHTMAPBAKER_PT_Panel"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Lightmap Baker'
-
-    def draw(self, context):
-        layout = self.layout
-
-
-class OBJECT_PT_PANEL(MAIN_PANEL, bpy.types.Panel):
-    bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
-    bl_label = "Objects"
-
-    def draw(self, context):
-        layout = self.layout
-
-        row = layout.row(align=True)
-        row.operator("object.add_to_bake_list", text="Add Objects")
-        row.operator("object.clear_bake_list", text="Clear List")
-
-        layout.template_list("OBJECT_UL_bake_list", "", context.scene, "lightmap_baker_objects",
-                             context.scene, "lightmap_baker_objects_index")
-
-        # Add a button to clean all invalid objects at once
-        row.operator("object.clean_all_invalid_objects", text="", icon='BRUSH_DATA')
-
-        # Add a button to select all objects in the list
-        layout.operator("object.select_all_in_list", text="Select All in List")
-
-        # Add Lightmap UV button
-        row = layout.row(align=True)
-        row.operator("object.add_lightmap_uv", text="Add Lightmap UV")
-
-        # Switch UV Index button
-        row = layout.row(align=True)
-        row.label(icon='GROUP_UVS', text="Active UV:")
-        row.prop(context.scene.active_uv_map_index, "lightmap_baker_uv_map_index", text="", emboss=True)
-        
-        # Button to clean lightmap nodes and Lightmap UVs
-        row = layout.row(align=True)
-        row.operator("object.remove_lightmap_nodes", text="Remove Lightmap Nodes")
-
-class SETTINGS_PT_PANEL(MAIN_PANEL, bpy.types.Panel):
-    bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
-    bl_label = "Settings"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Lightmap Baker'
-
-    def draw(self, context):
-
-        layout = self.layout
-
-        row = layout.row(align=True)
-        row.label(text="Resolution:")
-        row.prop(context.scene, "lightmap_baker_resolution", text="")
-
-        row = layout.row(align=True)
-        row.label(text="Device:")
-        row.prop(context.scene, "lightmap_baker_render_device", text="", toggle=True)
-        
-        row = layout.row(align=True)
-        row.label(text="Sample Count:")
-        row.prop(context.scene, "lightmap_baker_sample_count", text="")
-
-        # Add a margin option with a label in front
-        row = layout.row(align=True)
-        row.label(text="Margin:")
-        row.prop(context.scene, "lightmap_baker_margin", text="")
-
-class OUTPUT_PT_PANEL(MAIN_PANEL, bpy.types.Panel):
-    bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
-    bl_label = "Output"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Lightmap Baker'
-
-    def draw(self, context):
-        layout = self.layout
-
-        # Export options
-        # row = layout.row(align=True)
-        # row.prop(context.scene.only_lightmap_preview, "export_after_bake", text="Export Texture")
-        # if context.scene.only_lightmap_preview.export_after_bake:
-        #     row = layout.row(align=True)
-        #     row.prop(context.scene.only_lightmap_preview, "export_path", text="Export Path")
-
-        # Bake
-        layout.separator()
-        row = layout.row(align=True)
-        sub_row = row.row(align=True)
-        sub_row.scale_y = 1.5  # Adjust the scale factor as needed
-        sub_row.operator("object.bake_operator", text="Bake!", emboss=True)
-
-        # Add Lightmap Preview toggle button to the right of the Bake button
-        sub_row.scale_x = 2.0  # Adjust the scale factor for the icon             
-        sub_row.operator("object.toggle_lightmap_preview_diffuse", text="", icon='SHADING_RENDERED', depress=context.scene.lightmap_baker_preview_diffuse)
-
-        # Baking Progress
-        current_index = context.scene.lightmap_baker_objects_index
-        total_objects = len(context.scene.lightmap_baker_objects)
-        progress_value = context.scene.lightmap_baker_progress * 100
-           
-        if bake_in_progress:
-            layout.progress(factor=context.scene.lightmap_baker_progress, text=f"{progress_value:.0f}% ({current_index}/{total_objects} Objects)")
-        elif progress_value == 0.0:
-            layout.progress(text=f"({0}/{total_objects} Objects)")
-        else:
-            layout.progress(factor=context.scene.lightmap_baker_progress, text="Completed!")
-
-        # Calculate and display elapsed time
-        layout.label(text=f"Elapsed Time: ")
-
-class AddToBakeListOperator(bpy.types.Operator):
+class LIGHTMAPBAKER_OT_add_to_objects_list(bpy.types.Operator):
     bl_idname = "object.add_to_bake_list"
     bl_label = "Add Object"
 
@@ -517,12 +524,8 @@ class AddToBakeListOperator(bpy.types.Operator):
                     new_item.object = obj.name
 
         return {'FINISHED'}
-    
-class LightmapBakerObjectsProperty(bpy.types.PropertyGroup):
-    object: bpy.props.StringProperty()
 
-    
-class LIGHTMAPBAKER_REMOVE_LIGHTMAP_NODES(bpy.types.Operator):
+class LIGHTMAPBAKER_OT_remove_lightmap_nodes(bpy.types.Operator):
     bl_idname = "object.remove_lightmap_nodes"
     bl_label = "Remove Lightmap Nodes"
     bl_description = "Remove lightmap nodes"
@@ -564,7 +567,7 @@ class LIGHTMAPBAKER_REMOVE_LIGHTMAP_NODES(bpy.types.Operator):
 
         return {'FINISHED'}
 
-class AddLightmapUVOperator(bpy.types.Operator):
+class LIGHTMAPBAKER_OT_add_lightmap_uv(bpy.types.Operator):
     bl_idname = "object.add_lightmap_uv"
     bl_label = "Add Lightmap UV"
     
@@ -582,7 +585,7 @@ class AddLightmapUVOperator(bpy.types.Operator):
                     obj.data.uv_layers[1].name = "Lightmap"
         return {'FINISHED'}
     
-class SelectAllInListOperator(bpy.types.Operator):
+class LIGHTMAPBAKER_OT_select_all_in_list(bpy.types.Operator):
     bl_idname = "object.select_all_in_list"
     bl_label = "Select All in List"
     bl_description = "Select all the objects in the list"
@@ -595,7 +598,7 @@ class SelectAllInListOperator(bpy.types.Operator):
                 obj.select_set(True)
         return {'FINISHED'}
 
-class CleanAllInvalidObjectsOperator(bpy.types.Operator):
+class LIGHTMAPBAKER_OT_clean_invalid_objects(bpy.types.Operator):
     bl_idname = "object.clean_all_invalid_objects"
     bl_label = "Clean All Invalid Objects"
     bl_description = "Clean All Invalid Objects"
@@ -614,9 +617,9 @@ class CleanAllInvalidObjectsOperator(bpy.types.Operator):
 
         return {'FINISHED'}
 
-class BakeModalOperator(bpy.types.Operator):
+class LIGHTMAPBAKER_OT_bake_modal(bpy.types.Operator):
     bl_idname = "wm.simple_modal_operator"
-    bl_label = "Simple Modal Operator"
+    bl_label = "Bake Modal Operator"
 
     _timer = None
 
@@ -696,30 +699,31 @@ class BakeModalOperator(bpy.types.Operator):
         wm.event_timer_remove(self._timer)
         bake_in_progress = False 
 
+
 def register():
     bpy.app.handlers.object_bake_complete.append(on_complete)
-    bpy.utils.register_class(LIGHTMAPBAKER_TOGGLE_LIGHTMAP_PREVIEW_DIFFUSE)
-    bpy.utils.register_class(OBJECT_OT_remove_single_from_bake_list)
-    bpy.utils.register_class(OBJECT_OT_remove_all_from_bake_list)
-    bpy.utils.register_class(BakeModalOperator)
-    bpy.utils.register_class(CleanAllInvalidObjectsOperator)
-    bpy.utils.register_class(AddLightmapUVOperator)
-    bpy.utils.register_class(SelectAllInListOperator)
-    bpy.utils.register_class(OBJECT_UL_bake_list)
-    bpy.utils.register_class(Operator)
+    bpy.utils.register_class(LIGHTMAPBAKER_OT_toggle_lightmap_preview_diffuse)
+    bpy.utils.register_class(LIGHTMAPBAKER_OT_remove_single_from_bake_list)
+    bpy.utils.register_class(LIGHTMAPBAKER_OT_remove_all_from_bake_list)
+    bpy.utils.register_class(LIGHTMAPBAKER_OT_bake_modal)
+    bpy.utils.register_class(LIGHTMAPBAKER_OT_clean_invalid_objects)
+    bpy.utils.register_class(LIGHTMAPBAKER_OT_add_lightmap_uv)
+    bpy.utils.register_class(LIGHTMAPBAKER_OT_select_all_in_list)
+    bpy.utils.register_class(LIGHTMAPBAKER_UL_objects_list)
+    bpy.utils.register_class(LIGHTMAPBAKER_OT_bake)
 
-    bpy.utils.register_class(LIGHTMAPBAKER_PT_PANEL)
-    bpy.utils.register_class(OBJECT_PT_PANEL)
-    bpy.utils.register_class(SETTINGS_PT_PANEL)
-    bpy.utils.register_class(OUTPUT_PT_PANEL)
+    bpy.utils.register_class(LIGHTMAPBAKER_PT_title)
+    bpy.utils.register_class(LIGHTMAPBAKER_PT_objects)
+    bpy.utils.register_class(LIGHTMAPBAKER_PT_settings)
+    bpy.utils.register_class(LIGHTMAPBAKER_PT_output)
 
-    bpy.utils.register_class(AddToBakeListOperator)
-    bpy.utils.register_class(LightmapBakerObjectsProperty)
-    bpy.utils.register_class(LightmapBakerProperties)
-    bpy.types.Scene.toggle_lightmap_preview_diffuse = bpy.props.PointerProperty(type=LightmapBakerProperties)
-    bpy.types.Scene.active_uv_map_index = bpy.props.PointerProperty(type=LightmapBakerProperties)
-    bpy.utils.register_class(LIGHTMAPBAKER_REMOVE_LIGHTMAP_NODES)
-    bpy.types.Scene.lightmap_baker_objects = bpy.props.CollectionProperty(type=LightmapBakerObjectsProperty)
+    bpy.utils.register_class(LIGHTMAPBAKER_OT_add_to_objects_list)
+    bpy.utils.register_class(LIGHTMAPBAKER_objects_properties)
+    bpy.utils.register_class(LIGHTMAPBAKER_properties)
+    bpy.types.Scene.toggle_lightmap_preview_diffuse = bpy.props.PointerProperty(type=LIGHTMAPBAKER_properties)
+    bpy.types.Scene.active_uv_map_index = bpy.props.PointerProperty(type=LIGHTMAPBAKER_properties)
+    bpy.utils.register_class(LIGHTMAPBAKER_OT_remove_lightmap_nodes)
+    bpy.types.Scene.lightmap_baker_objects = bpy.props.CollectionProperty(type=LIGHTMAPBAKER_objects_properties)
 
     # Add this line outside of any class definition
     bpy.types.Scene.lightmap_baker_margin = bpy.props.IntProperty(
@@ -794,29 +798,27 @@ def register():
         subtype='PERCENTAGE',
     )
 
-    
-
 def unregister():
     bpy.app.handlers.object_bake_complete.clear()
-    bpy.utils.unregister_class(LIGHTMAPBAKER_TOGGLE_LIGHTMAP_PREVIEW_DIFFUSE)
-    bpy.utils.unregister_class(OBJECT_OT_remove_single_from_bake_list)
-    bpy.utils.unregister_class(OBJECT_OT_remove_all_from_bake_list)
-    bpy.utils.unregister_class(BakeModalOperator)
-    bpy.utils.unregister_class(CleanAllInvalidObjectsOperator)
-    bpy.utils.unregister_class(AddLightmapUVOperator)
-    bpy.utils.unregister_class(SelectAllInListOperator)
-    bpy.utils.unregister_class(OBJECT_UL_bake_list)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_OT_toggle_lightmap_preview_diffuse)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_OT_remove_single_from_bake_list)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_OT_remove_all_from_bake_list)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_OT_bake_modal)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_OT_clean_invalid_objects)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_OT_add_lightmap_uv)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_OT_select_all_in_list)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_UL_objects_list)
 
-    bpy.utils.unregister_class(LIGHTMAPBAKER_PT_PANEL)
-    bpy.utils.unregister_class(OBJECT_PT_PANEL)
-    bpy.utils.unregister_class(SETTINGS_PT_PANEL)
-    bpy.utils.unregister_class(OUTPUT_PT_PANEL)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_PT_title)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_PT_objects)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_PT_settings)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_PT_output)
 
-    bpy.utils.unregister_class(Operator)
-    bpy.utils.unregister_class(AddToBakeListOperator)
-    bpy.utils.unregister_class(LightmapBakerObjectsProperty)
-    bpy.utils.unregister_class(LIGHTMAPBAKER_REMOVE_LIGHTMAP_NODES)
-    bpy.utils.unregister_class(LightmapBakerProperties)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_OT_bake)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_OT_add_to_objects_list)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_objects_properties)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_OT_remove_lightmap_nodes)
+    bpy.utils.unregister_class(LIGHTMAPBAKER_properties)
 
     del bpy.types.Scene.lightmap_baker_objects_index
     del bpy.types.Scene.lightmap_baker_objects
