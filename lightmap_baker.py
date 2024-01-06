@@ -21,10 +21,6 @@ def bake_diffuse(context, obj):
 
     bpy.ops.object.bake('INVOKE_DEFAULT', type='DIFFUSE', use_clear=False)
 
-def on_complete(dummy):
-    global bake_in_progress
-    bake_in_progress = False
-
 def clear_baked_texture(context):
     # Clear the baked texture by setting all pixels to black
     image = bpy.data.images.get(context.scene.lightmap_baker_texture_name)
@@ -116,6 +112,29 @@ def find_shader_output_node(material):
         print("Error: No MIX_SHADER, ADD_SHADER, or BSDF nodes found.")
         return None
 
+def update(): 
+    calculate_elapsed_time()
+    # redraw area for the timer
+    screen = bpy.context.screen
+    for area in screen.areas:
+        area.tag_redraw()
+
+    # refire fonction
+    bpy.app.timers.register(update, first_interval=0.5)
+
+def format_time(seconds):
+    minutes, seconds = divmod(seconds, 60)
+    return f"{int(minutes):02d}:{int(seconds):02d}.{int((seconds - int(seconds)) * 100):02d}"
+
+def calculate_elapsed_time():
+    bpy.context.scene.lightmap_baker.elapsed_time = time.perf_counter() - bpy.context.scene.lightmap_baker.time_start
+
+def on_complete(dummy):
+    global bake_in_progress
+    bake_in_progress = False
+
+def on_cancel(context, dummy):
+    print("Task cancelled")
 
 class LIGHTMAPBAKER_properties(bpy.types.PropertyGroup):
     lightmap_baker_objects_index: bpy.props.IntProperty(
@@ -195,9 +214,20 @@ class LIGHTMAPBAKER_properties(bpy.types.PropertyGroup):
         description="Extend the baked result as a post process filter",
     )
 
+    time_start: bpy.props.FloatProperty(
+    name="Time Start",
+    description="Ttime when bake starts",
+    default=0.00000,
+    )
+
+    elapsed_time: bpy.props.FloatProperty(
+    name="Elapsed Time",
+    description="Time elapsed to complete the bake process",
+    default=0.00000,
+    )
+
 class LIGHTMAPBAKER_objects_properties(bpy.types.PropertyGroup):
     object: bpy.props.StringProperty()
-
 
 class LIGHTMAPBAKER_PT_main:
     bl_space_type = "VIEW_3D"
@@ -315,9 +345,9 @@ class LIGHTMAPBAKER_PT_output(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
             layout.progress(text=f"({0}/{total_objects} Objects)")
         else:
             layout.progress(factor=context.scene.lightmap_baker_progress, text="Completed!")
-
-        # Calculate and display elapsed time
-        layout.label(text=f"Elapsed Time: ")
+        
+        # Display elapsed time 00:00.00
+        layout.label(text=f"Elapsed Time: {format_time(context.scene.lightmap_baker.elapsed_time)}") 
 
 
 class LIGHTMAPBAKER_UL_objects_list(bpy.types.UIList):
@@ -340,7 +370,17 @@ class LIGHTMAPBAKER_OT_bake(bpy.types.Operator):
         global bake_in_progress
 
         time_start = time.time()
-        
+
+        # Reset elapsed time
+        context.scene.lightmap_baker.elapsed_time = 0.0
+
+        # Start the timer
+        context.scene.lightmap_baker.time_start = time.perf_counter()
+        print(f"Bake task started at time {format_time(context.scene.lightmap_baker.elapsed_time)}")
+
+        # bpy.ops.wm.modal_timer_operator('INVOKE_DEFAULT')
+        bpy.app.timers.register(update, first_interval=0.5)
+
         # Cancel if the list ist empty
         if len(context.scene.lightmap_baker_objects) == 0:
             self.report({'ERROR'}, "Nothing to Bake :(")
@@ -448,7 +488,7 @@ class LIGHTMAPBAKER_OT_bake(bpy.types.Operator):
     
             # Bake diffuse
             bake_diffuse(context, obj)
-            bpy.ops.wm.simple_modal_operator('INVOKE_DEFAULT')
+            bpy.ops.wm.bake_modal_operator('INVOKE_DEFAULT')
             bake_in_progress = True
     
             print("My Script Finished: %.4f sec" % (time.time() - time_start))
@@ -562,7 +602,6 @@ class LIGHTMAPBAKER_OT_remove_lightmap_nodes(bpy.types.Operator):
                     shader_input = material.node_tree.nodes["Material Output"].inputs["Surface"]
                     material.node_tree.links.new(shader_output, shader_input)
 
-        print("A")
         context.scene.lightmap_baker_preview_diffuse = False
 
         return {'FINISHED'}
@@ -618,7 +657,7 @@ class LIGHTMAPBAKER_OT_clean_invalid_objects(bpy.types.Operator):
         return {'FINISHED'}
 
 class LIGHTMAPBAKER_OT_bake_modal(bpy.types.Operator):
-    bl_idname = "wm.simple_modal_operator"
+    bl_idname = "wm.bake_modal_operator"
     bl_label = "Bake Modal Operator"
 
     _timer = None
@@ -627,21 +666,23 @@ class LIGHTMAPBAKER_OT_bake_modal(bpy.types.Operator):
         global bake_in_progress
 
         if event.type == 'ESC':
-            print("Modal canceled.")
             self.cancel(context)
             return {'CANCELLED'}
 
         if not bake_in_progress:
+            
             # Access the context to get the scene and objects list
             context = bpy.context
             scene = context.scene
             objects_list = context.scene.lightmap_baker_objects
 
+            total_objects = len(objects_list)
+            print(f"Baking object {scene.lightmap_baker_objects_index}/{total_objects}")
+            
             # Increment the index for the next object
             scene.lightmap_baker_objects_index += 1
 
             # Calculate progress
-            total_objects = len(objects_list)
             progress_value = scene.lightmap_baker_objects_index / total_objects
             scene.lightmap_baker_progress = progress_value
 
@@ -662,15 +703,24 @@ class LIGHTMAPBAKER_OT_bake_modal(bpy.types.Operator):
                     context.view_layer.objects.active = next_obj
                     next_obj.select_set(True)
 
-                    print(f"Baking object {scene.lightmap_baker_objects_index}/{total_objects}")
+                    
 
                     bake_in_progress = True
 
                     bake_diffuse(context, next_obj)
             else:
+
+                # BAKE DONE!
+
                 if scene.lightmap_baker_objects_index >= total_objects:
+
+                    # Stop timer
+                    bpy.app.timers.unregister(update)
                     print("Bake process complete for all objects.")
 
+                    # calculate elapsed time
+                    calculate_elapsed_time()
+                    
                 # Reset the UV map to the initial state for all objects
                 for obj_name in objects_list:
                     obj = bpy.data.objects.get(obj_name.object)
@@ -699,9 +749,9 @@ class LIGHTMAPBAKER_OT_bake_modal(bpy.types.Operator):
         wm.event_timer_remove(self._timer)
         bake_in_progress = False 
 
-
 def register():
     bpy.app.handlers.object_bake_complete.append(on_complete)
+    bpy.app.handlers.object_bake_cancel.append(on_cancel)
     bpy.utils.register_class(LIGHTMAPBAKER_OT_toggle_lightmap_preview_diffuse)
     bpy.utils.register_class(LIGHTMAPBAKER_OT_remove_single_from_bake_list)
     bpy.utils.register_class(LIGHTMAPBAKER_OT_remove_all_from_bake_list)
@@ -723,7 +773,11 @@ def register():
     bpy.types.Scene.toggle_lightmap_preview_diffuse = bpy.props.PointerProperty(type=LIGHTMAPBAKER_properties)
     bpy.types.Scene.active_uv_map_index = bpy.props.PointerProperty(type=LIGHTMAPBAKER_properties)
     bpy.utils.register_class(LIGHTMAPBAKER_OT_remove_lightmap_nodes)
+    bpy.types.Scene.lightmap_baker = bpy.props.PointerProperty(type=LIGHTMAPBAKER_properties)
     bpy.types.Scene.lightmap_baker_objects = bpy.props.CollectionProperty(type=LIGHTMAPBAKER_objects_properties)
+    bpy.types.Scene.time_start = bpy.props.PointerProperty(type=LIGHTMAPBAKER_properties)
+    bpy.types.Scene.elapsed_time = bpy.props.PointerProperty(type=LIGHTMAPBAKER_properties)
+    
 
     # Add this line outside of any class definition
     bpy.types.Scene.lightmap_baker_margin = bpy.props.IntProperty(
@@ -800,6 +854,8 @@ def register():
 
 def unregister():
     bpy.app.handlers.object_bake_complete.clear()
+    bpy.app.handlers.object_bake_cancel.clear()
+
     bpy.utils.unregister_class(LIGHTMAPBAKER_OT_toggle_lightmap_preview_diffuse)
     bpy.utils.unregister_class(LIGHTMAPBAKER_OT_remove_single_from_bake_list)
     bpy.utils.unregister_class(LIGHTMAPBAKER_OT_remove_all_from_bake_list)
@@ -820,6 +876,7 @@ def unregister():
     bpy.utils.unregister_class(LIGHTMAPBAKER_OT_remove_lightmap_nodes)
     bpy.utils.unregister_class(LIGHTMAPBAKER_properties)
 
+    del bpy.types.Scene.lightmap_baker
     del bpy.types.Scene.lightmap_baker_objects_index
     del bpy.types.Scene.lightmap_baker_objects
     del bpy.types.Scene.lightmap_baker_preview_diffuse
@@ -829,6 +886,8 @@ def unregister():
     del bpy.types.Scene.lightmap_baker_sample_count
     del bpy.types.Scene.lightmap_baker_progress
     del bpy.types.Scene.lightmap_baker_uv_map_index
+    del bpy.types.Scene.time_start
+    del bpy.types.Scene.elapsed_time
 
 if __name__ == '__main__':
     register()
