@@ -122,6 +122,11 @@ class Operator(bpy.types.Operator):
 
     def execute(self, context):
         global bake_in_progress
+        
+        # Cancel if the list ist empty
+        if len(context.scene.lightmap_baker_objects) == 0:
+            self.report({'ERROR'}, "Nothing to Bake :(")
+            return {'CANCELLED'}
 
         # Reset Bake Progression and index
         context.scene.lightmap_baker_progress = 0.0
@@ -137,6 +142,8 @@ class Operator(bpy.types.Operator):
         if invalid_objects:
             self.report({'ERROR'}, f"Invalid objects found in the bake list.")
             return {'CANCELLED'}
+        
+
 
         objects_missing_uv = [obj_name for obj_name in objects_to_bake
                               if len(bpy.data.objects.get(obj_name).data.uv_layers) < 2]
