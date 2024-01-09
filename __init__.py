@@ -10,8 +10,15 @@ bl_info = {
     "category": "Render"
 }
 
-from .lightmap_baker import register, unregister
+from . import lightmap_baker, ui
 
-if __name__ == '__main__':
-    
+def register():
+    lightmap_baker.register()
+    ui.register()
+
+def unregister():
+    lightmap_baker.unregister()
+    ui.unregister()
+
+if __name__ == "__main__":
     register()
