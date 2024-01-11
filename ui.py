@@ -95,10 +95,7 @@ class LIGHTMAPBAKER_PT_filtering(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
         layout = self.layout
         layout.enabled = not context.scene.lightmap_baker_properties.busy
 
-        col  = layout.column(align=False)
-        col.enabled = False
-        col.prop(context.scene.lightmap_baker_properties, "filtering_denoise", text="Denoise (Not implemented yet)")
-        col.prop(context.scene.lightmap_baker_properties, "filtering_bilateral_blur", text="Bilateral Blur (Not implemented yet)")
+
 
 class LIGHTMAPBAKER_PT_settings(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
     bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
@@ -129,13 +126,15 @@ class LIGHTMAPBAKER_PT_settings(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
         row.label(text="Margin:")
         row.prop(context.scene.lightmap_baker_properties, "bake_margin", text="")
 
+        col  = layout.column(align=False)
+        col.prop(context.scene.lightmap_baker_properties, "use_compositor", text="Use Compositor")
+
         # Export options
         row = layout.row(align=True)
-        row.enabled = False
-        row.prop(context.scene.lightmap_baker_properties, "export_enabled", text="Export Texture (Not implemented yet)")
-        #if context.scene.lightmap_baker_properties.export_enabled:
-        #    row = layout.row(align=True)
-        #    row.prop(context.scene.lightmap_baker_properties.export_enabled, "export_path", text="Export Path")
+        row.prop(context.scene.lightmap_baker_properties, "export_enabled", text="Export Texture")
+        if context.scene.lightmap_baker_properties.export_enabled:
+            row = layout.row(align=True)
+            row.prop(context.scene.lightmap_baker_properties, "export_path", text="Export Path")
 
 class LIGHTMAPBAKER_PT_bake(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
     bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
@@ -148,17 +147,19 @@ class LIGHTMAPBAKER_PT_bake(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
         layout = self.layout
         self.context = context
 
+        properties = context.scene.lightmap_baker_properties
         # Baking Progress
-        current_index = context.scene.lightmap_baker_properties.objects_index
+        current_index = properties.objects_index
         total_objects = len(context.scene.lightmap_baker_objects)
-        progress_value = context.scene.lightmap_baker_properties.bake_progress
+        progress_value = properties.bake_progress
 
         # States
-        idle = not context.scene.lightmap_baker_properties.busy and not progress_value == 1.0
-        baking = context.scene.lightmap_baker_properties.busy and not context.scene.lightmap_baker_properties.cancel_bake
-        aborting = context.scene.lightmap_baker_properties.bake_in_progress and context.scene.lightmap_baker_properties.cancel_bake
-        canceled = context.scene.lightmap_baker_properties.cancel_bake and not context.scene.lightmap_baker_properties.bake_in_progress and context.scene.lightmap_baker_properties.busy
+        idle = not properties.busy and not progress_value == 1.0
+        baking = properties.busy and not properties.cancel_bake
+        aborting = properties.bake_in_progress and properties.cancel_bake
+        canceled = properties.cancel_bake and not properties.bake_in_progress and properties.busy
         completed = progress_value == 1.0
+       
         # Bake and Cancel 
         row = layout.row(align=False)
         row.scale_y = 1.5 
@@ -168,7 +169,6 @@ class LIGHTMAPBAKER_PT_bake(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
             operator_text = "Bake!"
             operator_object = "object.bake_operator"
             progress_text = f"({0}/{total_objects} Objects)"
-
 
         elif baking:
             row.alert = True

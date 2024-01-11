@@ -1,10 +1,12 @@
 import bpy
 import time
 import ctypes
-# from bpy.app.handlers import persistent
+import tempfile
+import os
+from bpy.app.handlers import persistent
 
-# Reset variables in case blender exited in a bad baking state? yea it happend more than once :P
-
+# Reset variables in case blender ended in a bad baking state? yea it happend more than once :P
+@persistent
 def on_file_opened(dummy):
     properties = bpy.context.scene.lightmap_baker_properties
 
@@ -12,8 +14,7 @@ def on_file_opened(dummy):
     properties.bake_in_progress = False
     properties.cancel_bake = False
     properties.bake_progress = 0.0
-
-
+@persistent
 def on_post_bake(dummy):  
     # select the next object
     scene = bpy.context.scene
@@ -21,8 +22,9 @@ def on_post_bake(dummy):
     scene.lightmap_baker_properties.objects_index += 1
 
     pack_lightmap_texture()
+    save_image()
 
-
+@persistent
 def on_bake_cancel(dummy):
     context = bpy.context
     scene = context.scene
@@ -33,9 +35,6 @@ def on_bake_cancel(dummy):
     scene.lightmap_baker_properties.bake_progress = 0.0
     # Freedom is real
     scene.lightmap_baker_properties.busy = False
-
-    bpy.app.handlers.object_bake_complete.remove(on_post_bake)
-    bpy.app.handlers.object_bake_cancel.remove(on_bake_cancel)
 
     refresh_ui()
 
@@ -127,13 +126,12 @@ def create_lightmap_nodes(context, objects_to_bake):
     
     return {'FINISHED'}
 
-
 # Preview Lightmaps
-def lightmap_preview_diffuse(self, context):
+def lightmap_preview_diffuse(self, context, objects_list):
     if context.scene.lightmap_baker_properties.preview_diffuse_enabled:
         connect_lightmap_to_shader_output(context)
     else:
-        disconnect_lightmap_to_shader_output(context)
+        disconnect_lightmap_to_shader_output(context, objects_list)
 
 def connect_lightmap_to_shader_output(context):
     objects_list = context.scene.lightmap_baker_objects
@@ -164,9 +162,7 @@ def connect_lightmap_to_shader_output(context):
                     # Update the nodes_dictionary in obj_name with the modified dictionary
                     obj_name.nodes_dictionary = ','.join(f"{key}:{value}" for key, value in nodes_dict.items())
 
-
-def disconnect_lightmap_to_shader_output(context):
-    objects_list = context.scene.lightmap_baker_objects
+def disconnect_lightmap_to_shader_output(context, objects_list):
     for obj_name in objects_list:
         obj = bpy.data.objects.get(obj_name.objects_list)
         if obj and obj.data.materials:
@@ -184,7 +180,6 @@ def disconnect_lightmap_to_shader_output(context):
                         material_output = find_material_output_node(obj_material)
                         links.new(original_shader_node.outputs[0], material_output.inputs[0])
 
-
 def find_shader_connected_to_material_output(material):
     material_output = find_material_output_node(material)
     
@@ -199,7 +194,6 @@ def find_material_output_node(obj_material):
             return node
     return None
 
-
 # What we do when bake is done?
 def calculate_elapsed_time():
     bpy.context.scene.lightmap_baker_properties.elapsed_time = time.perf_counter() - bpy.context.scene.lightmap_baker_properties.time_start
@@ -209,26 +203,109 @@ def pack_lightmap_texture():
     image = bpy.data.images[image_name]
     image.pack()
 
-def handle_bake_completion(context):  
-        # Automatic Lightmap Preview
-        if context.scene.lightmap_baker_properties.automatic_lightmap_preview:
-            context.scene.lightmap_baker_properties.preview_diffuse_enabled = True
+def save_image():
+    context = bpy.context
+    scene = context.scene
 
-        context.scene.lightmap_baker_properties.bake_in_progress = False
-        context.scene.lightmap_baker_properties.cancel_bake = False
+    lightmap_name = context.scene.lightmap_baker_properties.lightmap_name
+
+    # Check if the image already exists
+    image = bpy.data.images.get(lightmap_name)
+
+    if scene.lightmap_baker_properties.export_enabled:
+        filepath = bpy.path.abspath(context.scene.lightmap_baker_properties.export_path)
+    else:
+        filepath = bpy.path.abspath(tempfile.gettempdir())
+        
+    filepath = os.path.join(filepath, image.name + ".exr")
+
+    # Save the image using image.save()
+    image.save_render(filepath=filepath, scene=scene)
+    image.filepath = filepath
+    image.unpack(method='REMOVE')
+
+
+def apply_postprocess():
+    context = bpy.context
+    scene = context.scene
+
+    context.scene.use_nodes = True
+
+    tree = context.scene.node_tree
+    nodes = tree.nodes
+
+    lightmap_name = context.scene.lightmap_baker_properties.lightmap_name
+
+    # Try to get an existing image node by name
+    image_node = nodes.get(lightmap_name)
+
+    # Create a new Image node if not found
+    if not image_node:
+        image_node = nodes.new(type='CompositorNodeImage')
+        image_node.location = (0, 0)
+        image_node.name = lightmap_name  # Set the name of the image node
+
+    # Set the image to the packed "Lightmap"
+    image = bpy.data.images.get(lightmap_name)
+    image_node.image = image
+        
+    # Find or create Render Layers node
+    render_node = nodes.get("Render Layers")
+    render_node.mute = True
+
+    # Check what is linked to the Render Layers node
+    if render_node:
+        for node_link in render_node.outputs['Image'].links:
+            linked_node = node_link.to_node
+            
+            # Connect the Image node to the linked node 
+            tree.links.new(image_node.outputs['Image'], linked_node.inputs['Image'])
+
+    # Set the render resolution for the lightmap
+    width, height = image.size
+    scene.render.resolution_x = width
+    scene.render.resolution_y = height
+
+    image = bpy.data.images.get(lightmap_name)
+
+    if scene.lightmap_baker_properties.export_enabled:
+        filepath = bpy.path.abspath(context.scene.lightmap_baker_properties.export_path)
+    else:
+        filepath = bpy.path.abspath(tempfile.gettempdir())
+        
+    filepath = os.path.join(filepath, image.name + ".exr")
+
+    # Set render settings
+    bpy.context.scene.render.image_settings.file_format = 'OPEN_EXR'
+    bpy.context.scene.render.image_settings.color_mode = 'RGB'
+    bpy.context.scene.render.filepath = filepath
+
+    # Render the lightmap again, now with the Image node connected
+    bpy.ops.render.render(write_still=True, use_viewport=False)
+    image.reload()
+    
+
+# When the bake finishes...
+def handle_bake_completion(context):  
+        
+        properties = context.scene.lightmap_baker_properties
+        # Automatic Lightmap Preview
+        if properties.automatic_lightmap_preview:
+            properties.preview_diffuse_enabled = True
+
+        properties.bake_in_progress = False
+        properties.cancel_bake = False
         # Freedom is real
-        context.scene.lightmap_baker_properties.busy = False
+        properties.busy = False
         # Refresh the UI
         context.area.tag_redraw()
         
-        pack_lightmap_texture()
         calculate_elapsed_time()
 
-        bpy.app.handlers.object_bake_complete.remove(on_post_bake)
-        bpy.app.handlers.object_bake_cancel.remove(on_bake_cancel)
+        if properties.use_compositor:
+            apply_postprocess()
 
         return {'FINISHED'}
-
 
 def refresh_ui():
     for window in bpy.context.window_manager.windows:
@@ -368,9 +445,9 @@ class LIGHTMAPBAKER_properties(bpy.types.PropertyGroup):
     default=0.0,
     )
 
-    filtering_denoise: bpy.props.BoolProperty(
-    name="Cancel Bake",
-    description="Cancel Bake",
+    use_compositor: bpy.props.BoolProperty(
+    name="Use Compositor",
+    description="Apply Post Process filter on the baked texture",
     default=False,
     )
 
@@ -477,7 +554,8 @@ class LIGHTMAPBAKER_OT_bake(bpy.types.Operator):
     
             # Disable lightmaps preview
             context.scene.lightmap_baker_properties.preview_diffuse_enabled = False
-            lightmap_preview_diffuse(self, context)
+            objects_list = context.scene.lightmap_baker_objects
+            lightmap_preview_diffuse(self, context, objects_list)
             create_lightmap_nodes(context, objects_to_bake)
 
             for obj_name in objects_to_bake:
@@ -499,9 +577,6 @@ class LIGHTMAPBAKER_OT_bake(bpy.types.Operator):
             # Start Bake!
             bpy.ops.wm.bake_modal_operator('INVOKE_DEFAULT')
             bpy.ops.wm.elapsed_time_modal_operator('INVOKE_DEFAULT')
-
-            bpy.app.handlers.object_bake_complete.append(on_post_bake)
-            bpy.app.handlers.object_bake_cancel.append(on_bake_cancel)
 
             print("My Script Finished: %.4f sec" % (time.time() - time_start))
             return {'FINISHED'}
@@ -532,6 +607,14 @@ class LIGHTMAPBAKER_OT_remove_all_from_bake_list(bpy.types.Operator):
     bl_label = "Clear List"
 
     def execute(self, context):
+        # disable lightmap preview
+        context.scene.lightmap_baker_properties.preview_diffuse_enabled = False
+        objects_list = context.scene.lightmap_baker_objects
+        for obj in objects_list:
+            print(obj.name)
+
+        disconnect_lightmap_to_shader_output(context, objects_list)
+
         context.scene.lightmap_baker_objects.clear()
         return {'FINISHED'}
 
@@ -551,13 +634,15 @@ class LIGHTMAPBAKER_OT_toggle_lightmap_preview_diffuse(bpy.types.Operator):
                     if texture_node:
                         has_lightmap = True
                         break  # Exit the loop if at least one object has a lightmap
+        objects_list = context.scene.lightmap_baker_objects
 
-        if not has_lightmap:
+        if not has_lightmap or not objects_list:
             self.report({'ERROR'}, "Nothing to preview :(")
             return {'CANCELLED'}
 
         context.scene.lightmap_baker_properties.preview_diffuse_enabled = not context.scene.lightmap_baker_properties.preview_diffuse_enabled
-        lightmap_preview_diffuse(self, context)
+        objects_list = context.scene.lightmap_baker_objects
+        lightmap_preview_diffuse(self, context, objects_list)
         return {'FINISHED'}
 
 class LIGHTMAPBAKER_OT_add_to_objects_list(bpy.types.Operator):
@@ -600,7 +685,8 @@ class LIGHTMAPBAKER_OT_remove_lightmap_nodes(bpy.types.Operator):
                         material.node_tree.nodes.remove(texture_node)
 
         # Reconnect original nodes
-        disconnect_lightmap_to_shader_output(context)
+        objects_list = context.scene.lightmap_baker_objects
+        disconnect_lightmap_to_shader_output(context, objects_list)
         context.scene.lightmap_baker_properties.preview_diffuse_enabled = False
         return {'FINISHED'}
 
@@ -734,12 +820,14 @@ class LIGHTMAPBAKER_OT_bake_modal(bpy.types.Operator):
         if self.bake_completed:
             self.cancel(context)
             return {'CANCELLED'}
-
+        
         if not scene.lightmap_baker_properties.bake_in_progress and not scene.lightmap_baker_properties.cancel_bake:
             # Check for remaining objects in the list
             if scene.lightmap_baker_properties.objects_index < total_objects and not self.bake_completed:
                 obj_data = objects_list[scene.lightmap_baker_properties.objects_index]
                 obj = bpy.data.objects.get(obj_data.objects_list)
+
+                print("Pre-Bake next object")
 
                 bake_diffuse(context, obj)
                 scene.lightmap_baker_properties.bake_in_progress = True
@@ -752,7 +840,8 @@ class LIGHTMAPBAKER_OT_bake_modal(bpy.types.Operator):
                 handle_bake_completion(context)
 
                 # Automatic lightmap preview
-                lightmap_preview_diffuse(self, context)
+                objects_list = context.scene.lightmap_baker_objects
+                lightmap_preview_diffuse(self, context, objects_list)
 
             # calculate progress
             progress_value = scene.lightmap_baker_properties.objects_index / len(objects_list)    
@@ -762,7 +851,7 @@ class LIGHTMAPBAKER_OT_bake_modal(bpy.types.Operator):
 
     def execute(self, context):
         wm = context.window_manager
-        self._timer = wm.event_timer_add(0.1, window=context.window)
+        self._timer = wm.event_timer_add(1.0, window=context.window)
         wm.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
@@ -779,12 +868,8 @@ class LIGHTMAPBAKER_OT_elapsed_time_modal(bpy.types.Operator):
     interval = 0.1
 
     def modal(self, context, event):
-        # Modal stop when task completed
-        if context.scene.lightmap_baker_properties.bake_progress == 1.0:
-            self.cancel(context)
-            return {'CANCELLED'}
-        # Modal stop when task cancelled
-        if context.scene.lightmap_baker_properties.cancel_bake:
+        # Modal stop when not baking
+        if not context.scene.lightmap_baker_properties.busy:
             self.cancel(context)
             return {'CANCELLED'}
 
@@ -798,9 +883,10 @@ class LIGHTMAPBAKER_OT_elapsed_time_modal(bpy.types.Operator):
         return {'PASS_THROUGH'}
 
 
-    def invoke(self, context, event):
-        self._timer = context.window_manager.event_timer_add(self.interval, window=context.window)
-        context.window_manager.modal_handler_add(self)
+    def execute(self, context):
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(1.0, window=context.window)
+        wm.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
     def cancel(self, context):
@@ -850,9 +936,9 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
 
-    # bpy.app.handlers.load_post.append(on_file_opened)
-    # bpy.app.handlers.object_bake_complete.append(on_post_bake)
-    # bpy.app.handlers.object_bake_cancel.append(on_bake_cancel)
+    bpy.app.handlers.load_post.append(on_file_opened)
+    bpy.app.handlers.object_bake_complete.append(on_post_bake)
+    bpy.app.handlers.object_bake_cancel.append(on_bake_cancel)
 
     bpy.types.Scene.lightmap_baker_properties = bpy.props.PointerProperty(type=LIGHTMAPBAKER_properties)
     bpy.types.Scene.lightmap_baker_objects = bpy.props.CollectionProperty(type=LIGHTMAPBAKER_objects_properties)
@@ -861,9 +947,9 @@ def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
 
-    #bpy.app.handlers.load_post.remove(on_file_opened)
-    #bpy.app.handlers.object_bake_complete.remove(on_post_bake)
-    #bpy.app.handlers.object_bake_cancel.remove(on_bake_cancel)
+    bpy.app.handlers.load_post.remove(on_file_opened)
+    bpy.app.handlers.object_bake_complete.remove(on_post_bake)
+    bpy.app.handlers.object_bake_cancel.remove(on_bake_cancel)
     
     del bpy.types.Scene.lightmap_baker_properties
     del bpy.types.Scene.lightmap_baker_objects
