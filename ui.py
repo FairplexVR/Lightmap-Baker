@@ -27,6 +27,7 @@ class LightmapBakerMenu(bpy.types.Menu):
 class LIGHTMAPBAKER_PT_objects(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
     bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
     bl_label = "Objects"
+    bl_options = {"HIDE_HEADER"}
 
     def draw(self, context):
         layout = self.layout
@@ -62,25 +63,23 @@ class LIGHTMAPBAKER_PT_uv(bpy.types.Panel):
         layout = self.layout
         layout.enabled = not context.scene.lightmap_baker_properties.busy
 
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
         # Add/Delete UVs
-        row = layout.row(align=False)
-        row.operator("object.add_lightmap_uv", text="Add Lightmap UVs", icon='ADD')
-        row.operator("object.delete_lightmap_uv",  text="Delete Lightmap UVs", icon='REMOVE')
-        
-        # Rename UV
         col = layout.column(align=True)
+        col.operator("object.add_lightmap_uv", text="Add Lightmap UVs", icon='ADD')
+        col.operator("object.delete_lightmap_uv",  text="Delete Lightmap UVs", icon='REMOVE')
+        col.separator()
         
-        # Create a row to hold the label, property, and button
-        row = col.row(align=True)
-        row.label(text="UVMap Name")
-        row.prop(context.scene.lightmap_baker_properties, "lightmap_baker_uv_map_name", text="")
+        row = col.row(align=False)
+        row.prop(context.scene.lightmap_baker_properties, "lightmap_baker_uv_map_name", text="UVMap Name")
         row.scale_x = 0.5
         row.operator("object.set_lightmap_uv_name", text="Set")
 
         # Switch UV Index
         row = layout.row(align=True)
-        row.label(text="Active UV:")
-        row.prop(context.scene.lightmap_baker_properties, "lightmap_baker_uv_map_index", text="")
+        row.prop(context.scene.lightmap_baker_properties, "lightmap_baker_uv_map_index", text="Active UV")
         row.scale_x = 0.5
         row.operator("object.set_lightmap_uv_index", text="Set")
 
@@ -93,10 +92,25 @@ class LIGHTMAPBAKER_PT_filtering(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.enabled = not context.scene.lightmap_baker_properties.busy
 
+        layout.use_property_split = True
+        layout.use_property_decorate = False
 
+        # Denoise
+        row = layout.row(align=False)
+        row.prop(context.scene.lightmap_baker_properties, "use_denoise", text="Denoise")
 
+        # Bilateral Blur
+        row = layout.row(align=False)
+        row.prop(context.scene.lightmap_baker_properties, "use_bilateral_blur", text="Bilateral Blur")
+
+        if context.scene.lightmap_baker_properties.use_bilateral_blur:
+            col = layout.column()
+            col.prop(context.scene.lightmap_baker_properties, "bilateral_blur_iterations", text="Iterations")
+            col.prop(context.scene.lightmap_baker_properties, "bilateral_blur_color_sigma", text="Color Sigma")
+            col.prop(context.scene.lightmap_baker_properties, "bilateral_blur_space_sigma", text="Space Sigma")
+            
+            
 class LIGHTMAPBAKER_PT_settings(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
     bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
     bl_label = "Settings"
@@ -109,32 +123,42 @@ class LIGHTMAPBAKER_PT_settings(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
         layout = self.layout
         layout.enabled = not context.scene.lightmap_baker_properties.busy
 
-        row = layout.row(align=True)
-        row.label(text="Resolution:")
-        row.prop(context.scene.lightmap_baker_properties, "lightmap_resolution", text="")
+        layout.use_property_split = True
+        layout.use_property_decorate = False
 
-        row = layout.row(align=True)
-        row.label(text="Device:")
-        row.prop(context.scene.lightmap_baker_properties, "render_device", text="", toggle=True)
-        
-        row = layout.row(align=True)
-        row.label(text="Sample Count:")
-        row.prop(context.scene.lightmap_baker_properties, "sample_count", text="")
+        col = layout.column(align=False)
+        col.prop(context.scene.lightmap_baker_properties, "lightmap_resolution", text="Resolution")
+        col.prop(context.scene.lightmap_baker_properties, "render_device", text="Device", toggle=True)
+        col.separator()
+        col.prop(context.scene.lightmap_baker_properties, "sample_count", text="Sample Count")
+        col.prop(context.scene.lightmap_baker_properties, "bake_margin", text="Margin")
 
-        # Add a margin option with a label in front
-        row = layout.row(align=True)
-        row.label(text="Margin:")
-        row.prop(context.scene.lightmap_baker_properties, "bake_margin", text="")
+class LIGHTMAPBAKER_PT_export(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
+    bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
+    bl_label = "Export Lightmaps"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Lightmap Baker'
+    bl_options = {'DEFAULT_CLOSED'}
 
-        col  = layout.column(align=False)
-        col.prop(context.scene.lightmap_baker_properties, "use_compositor", text="Use Compositor")
+    def draw_header(self, context):
+        self.layout.enabled = not context.scene.lightmap_baker_properties.busy
+        self.layout.prop(context.scene.lightmap_baker_properties, "export_enabled", text="")
+   
+    def draw(self, context):
+        layout = self.layout
+
+        layout.enabled = not context.scene.lightmap_baker_properties.busy
+
+        layout.use_property_split = True
+        layout.use_property_decorate = False
 
         # Export options
         row = layout.row(align=True)
-        row.prop(context.scene.lightmap_baker_properties, "export_enabled", text="Export Texture")
         if context.scene.lightmap_baker_properties.export_enabled:
             row = layout.row(align=True)
             row.prop(context.scene.lightmap_baker_properties, "export_path", text="Export Path")
+
 
 class LIGHTMAPBAKER_PT_bake(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
     bl_parent_id = "LIGHTMAPBAKER_PT_Panel"
@@ -142,6 +166,7 @@ class LIGHTMAPBAKER_PT_bake(LIGHTMAPBAKER_PT_main, bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'Lightmap Baker'
+    bl_options = {"HIDE_HEADER"}
 
     def draw(self, context):
         layout = self.layout
@@ -236,6 +261,7 @@ classes = [
     LIGHTMAPBAKER_PT_uv,
     LIGHTMAPBAKER_PT_filtering,
     LIGHTMAPBAKER_PT_settings,
+    LIGHTMAPBAKER_PT_export,
     LIGHTMAPBAKER_PT_bake,
     LightmapBakerMenu,
     LIGHTMAPBAKER_MT_preview_context_menu,

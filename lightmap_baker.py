@@ -16,13 +16,13 @@ def on_file_opened(dummy):
     properties.bake_progress = 0.0
 @persistent
 def on_post_bake(dummy):  
+
+    property = bpy.context.scene.lightmap_baker_properties
     # select the next object
-    scene = bpy.context.scene
-    scene.lightmap_baker_properties.bake_in_progress = False
-    scene.lightmap_baker_properties.objects_index += 1
+    property.bake_in_progress = False
+    property.objects_index += 1
 
     pack_lightmap_texture()
-    save_image()
 
 @persistent
 def on_bake_cancel(dummy):
@@ -37,6 +37,30 @@ def on_bake_cancel(dummy):
     scene.lightmap_baker_properties.busy = False
 
     refresh_ui()
+
+# When the bake finishes...
+def handle_bake_completion(context):  
+        
+        properties = context.scene.lightmap_baker_properties
+        # Automatic Lightmap Preview
+        if properties.automatic_lightmap_preview:
+            properties.preview_diffuse_enabled = True
+
+        properties.bake_in_progress = False
+        properties.cancel_bake = False
+        # Freedom is real
+        properties.busy = False
+
+        save_image()
+        apply_postprocess()
+        calculate_elapsed_time()
+
+        # Automatic lightmap preview
+        objects_list = context.scene.lightmap_baker_objects
+        lightmap_preview_diffuse(context, objects_list)
+
+        return {'FINISHED'}
+
 
 # When the bake started...
 def bake_diffuse(context, obj):
@@ -88,19 +112,29 @@ def create_lightmap_nodes(context, objects_to_bake):
     # Create a new lightmap image or reuse existing one
     new_image = bpy.data.images.get(context.scene.lightmap_baker_properties.lightmap_name)
 
+    lightmap_name = context.scene.lightmap_baker_properties.lightmap_name
+
+    # Check if 'new_image' is not already created
     if not new_image:
-        new_image = bpy.data.images.new(name=context.scene.lightmap_baker_properties.lightmap_name,
-                                        width=resolution, height=resolution, float_buffer=True)
+        # Create a new image with the specified parameters
+        new_image = bpy.data.images.new(
+            name=lightmap_name,
+            width=resolution,
+            height=resolution,
+            float_buffer=True
+        )
 
         new_image.colorspace_settings.name = 'Linear Rec.709'
         new_image.use_view_as_render = True
         new_image.file_format = 'OPEN_EXR'
+
 
     for obj_name in objects_to_bake:
         obj = bpy.data.objects.get(obj_name)
         if obj and obj.data.materials:
             for material_slot in obj.material_slots:
                 obj_material = material_slot.material
+                
 
                 # Check if a ShaderNodeTexImage already exists
                 texture_node = obj_material.node_tree.nodes.get("Bake_Texture_Node")
@@ -112,6 +146,9 @@ def create_lightmap_nodes(context, objects_to_bake):
 
                 # Set the image for the texture node
                 texture_node.image = new_image
+
+                # Set the node setting to cubic
+                obj_material.node_tree.nodes["Bake_Texture_Node"].interpolation = 'Cubic'
 
                 # Check if a UVMap node already exists
                 uvmap_node = obj_material.node_tree.nodes.get("UVMap_Node")
@@ -127,7 +164,7 @@ def create_lightmap_nodes(context, objects_to_bake):
     return {'FINISHED'}
 
 # Preview Lightmaps
-def lightmap_preview_diffuse(self, context, objects_list):
+def lightmap_preview_diffuse(context, objects_list):
     if context.scene.lightmap_baker_properties.preview_diffuse_enabled:
         connect_lightmap_to_shader_output(context)
     else:
@@ -199,113 +236,185 @@ def calculate_elapsed_time():
     bpy.context.scene.lightmap_baker_properties.elapsed_time = time.perf_counter() - bpy.context.scene.lightmap_baker_properties.time_start
 
 def pack_lightmap_texture():
+
     image_name = bpy.context.scene.lightmap_baker_properties.lightmap_name
     image = bpy.data.images[image_name]
     image.pack()
 
 def save_image():
-    context = bpy.context
-    scene = context.scene
+    scene = bpy.context.scene
 
-    lightmap_name = context.scene.lightmap_baker_properties.lightmap_name
-
-    # Check if the image already exists
-    image = bpy.data.images.get(lightmap_name)
-
+    lightmap_name = scene.lightmap_baker_properties.lightmap_name
+    
     if scene.lightmap_baker_properties.export_enabled:
-        filepath = bpy.path.abspath(context.scene.lightmap_baker_properties.export_path)
+        filepath = bpy.path.abspath(scene.lightmap_baker_properties.export_path)
     else:
         filepath = bpy.path.abspath(tempfile.gettempdir())
-        
-    filepath = os.path.join(filepath, image.name + ".exr")
 
-    # Save the image using image.save()
+    filepath = os.path.join(filepath, f"{lightmap_name}.exr")
+
+    # Set the render settings for OpenEXR codec to ZIP compression
+    scene.render.image_settings.file_format = 'OPEN_EXR'
+    scene.render.image_settings.color_mode = 'RGB'
+    scene.render.image_settings.exr_codec = 'ZIP'
+    scene.render.filepath = filepath
+
+    # Save the image to the specified file path
+    image = bpy.data.images.get(lightmap_name)
     image.save_render(filepath=filepath, scene=scene)
-    image.filepath = filepath
+    image.filepath = get_img_filpath()
     image.unpack(method='REMOVE')
 
+def get_img_filpath():
+    scene = bpy.context.scene
+
+    lightmap_name = scene.lightmap_baker_properties.lightmap_name
+    
+    if scene.lightmap_baker_properties.export_enabled:
+        filepath = bpy.path.abspath(scene.lightmap_baker_properties.export_path)
+    else:
+        filepath = bpy.path.abspath(tempfile.gettempdir())
+
+    filepath = os.path.join(filepath, f"{lightmap_name}.exr")
+
+    return filepath
 
 def apply_postprocess():
-    context = bpy.context
-    scene = context.scene
+    scene = bpy.context.scene
+    property =  scene.lightmap_baker_properties
 
-    context.scene.use_nodes = True
+    # Cancel compositing if no checkbox enabled
+    if not property.use_denoise and not property.use_bilateral_blur: 
+        return
+    
+    scene.use_nodes = True
+    compositor = scene.node_tree
+    nodes = compositor.nodes
+    
+    lightmap_name = scene.lightmap_baker_properties.lightmap_name
+    lightmap = bpy.data.images.get(lightmap_name)
 
-    tree = context.scene.node_tree
-    nodes = tree.nodes
 
-    lightmap_name = context.scene.lightmap_baker_properties.lightmap_name
-
-    # Try to get an existing image node by name
     image_node = nodes.get(lightmap_name)
 
-    # Create a new Image node if not found
     if not image_node:
         image_node = nodes.new(type='CompositorNodeImage')
         image_node.location = (0, 0)
-        image_node.name = lightmap_name  # Set the name of the image node
+        image_node.name = lightmap_name         
 
-    # Set the image to the packed "Lightmap"
-    image = bpy.data.images.get(lightmap_name)
-    image_node.image = image
-        
-    # Find or create Render Layers node
-    render_node = nodes.get("Render Layers")
-    render_node.mute = True
+    image_node.image = lightmap
+    composite_node = compositor.nodes.get('Composite', None)
 
-    # Check what is linked to the Render Layers node
-    if render_node:
-        for node_link in render_node.outputs['Image'].links:
-            linked_node = node_link.to_node
-            
-            # Connect the Image node to the linked node 
-            tree.links.new(image_node.outputs['Image'], linked_node.inputs['Image'])
+    if not composite_node:
+        composite_node = compositor.nodes.new(type='CompositorNodeComposite')
+        composite_node.location = (800, 0)
 
-    # Set the render resolution for the lightmap
-    width, height = image.size
+
+    # Denoise and Bilateral Blur
+    if property.use_denoise and property.use_bilateral_blur:
+
+        denoise_node = nodes.get('Denoise')
+
+        # If the Denoise node doesn't exist, create one
+        if not denoise_node:
+            denoise_node = nodes.new(type='CompositorNodeDenoise')
+            denoise_node.location = (200, 0)
+            denoise_node.name = 'Denoise'
+
+        bilateral_node = nodes.get('Bilateral Blur')
+
+        if not bilateral_node:
+            bilateral_node = nodes.new(type='CompositorNodeBilateralblur')
+            bilateral_node.location = (600, 0)
+            bilateral_node.name = 'Bilateral Blur'
+            bilateral_node.iterations = property.bilateral_blur_iterations
+            bilateral_node.sigma_color = property.bilateral_blur_color_sigma
+            bilateral_node.sigma_space = property.bilateral_blur_space_sigma
+
+        # Check if Blur node already exists
+        blur_node = nodes.get('Blur')
+
+        if not blur_node:
+            blur_node = nodes.new(type='CompositorNodeBlur')
+            blur_node.location = (400, 0)
+            blur_node.name = 'Blur'
+            blur_node.size_x = 2
+            blur_node.size_y = 2
+
+        # Connect image node 
+        compositor.links.new(image_node.outputs['Image'], denoise_node.inputs['Image'])
+
+        # Connect denoise node 
+        compositor.links.new(denoise_node.outputs['Image'], blur_node.inputs['Image'])
+        compositor.links.new(denoise_node.outputs['Image'], bilateral_node.inputs['Image'])
+
+        # Connect Blur node 
+        compositor.links.new(blur_node.outputs['Image'], bilateral_node.inputs['Determinator'])
+
+        # Connect Bilateral Blur node
+        compositor.links.new(bilateral_node.outputs['Image'], composite_node.inputs['Image'])
+
+    # Denoise
+    elif property.use_denoise:
+        # Check if a Denoise node already exists
+        denoise_node = nodes.get('Denoise')
+
+        # If the Denoise node doesn't exist, create one
+        if not denoise_node:
+            denoise_node = nodes.new(type='CompositorNodeDenoise')
+            denoise_node.location = (200, 0)
+            denoise_node.name = 'Denoise'
+
+        compositor.links.new(image_node.outputs['Image'], denoise_node.inputs['Image'])
+        compositor.links.new(denoise_node.outputs['Image'], composite_node.inputs['Image'])
+
+    # Bilateral Blur
+    elif property.use_bilateral_blur:
+        # Check if Bilateral Blur node already exists
+        bilateral_node = nodes.get('Bilateral Blur')
+
+        if not bilateral_node:
+            bilateral_node = nodes.new(type='CompositorNodeBilateralblur')
+            bilateral_node.location = (600, 0)
+            bilateral_node.name = 'Bilateral Blur'
+            bilateral_node.iterations = property.bilateral_blur_iterations
+            bilateral_node.sigma_color = property.bilateral_blur_color_sigma
+            bilateral_node.sigma_space = property.bilateral_blur_space_sigma
+
+        # Check if Blur node already exists
+        blur_node = nodes.get('Blur')
+
+        if not blur_node:
+            blur_node = nodes.new(type='CompositorNodeBlur')
+            blur_node.location = (400, 0)
+            blur_node.name = 'Blur'
+            blur_node.size_x = 2
+            blur_node.size_y = 2
+
+        # Connect image node to Blur node
+        compositor.links.new(image_node.outputs['Image'], blur_node.inputs['Image'])
+
+        # Connect image node to Bilateral Blur node
+        compositor.links.new(image_node.outputs['Image'], bilateral_node.inputs['Image'])
+        compositor.links.new(blur_node.outputs['Image'], bilateral_node.inputs['Determinator'])
+
+        # Connect Bilateral Blur node to Composite node
+        compositor.links.new(bilateral_node.outputs['Image'], composite_node.inputs['Image'])
+
+
+
+    # Render Post Process
+    width, height = lightmap.size
     scene.render.resolution_x = width
     scene.render.resolution_y = height
 
-    image = bpy.data.images.get(lightmap_name)
-
-    if scene.lightmap_baker_properties.export_enabled:
-        filepath = bpy.path.abspath(context.scene.lightmap_baker_properties.export_path)
-    else:
-        filepath = bpy.path.abspath(tempfile.gettempdir())
-        
-    filepath = os.path.join(filepath, image.name + ".exr")
-
-    # Set render settings
-    bpy.context.scene.render.image_settings.file_format = 'OPEN_EXR'
-    bpy.context.scene.render.image_settings.color_mode = 'RGB'
-    bpy.context.scene.render.filepath = filepath
-
-    # Render the lightmap again, now with the Image node connected
-    bpy.ops.render.render(write_still=True, use_viewport=False)
-    image.reload()
+    bpy.ops.render.render(write_still=True, use_viewport=False)   
+    lightmap.reload()
     
-
-# When the bake finishes...
-def handle_bake_completion(context):  
-        
-        properties = context.scene.lightmap_baker_properties
-        # Automatic Lightmap Preview
-        if properties.automatic_lightmap_preview:
-            properties.preview_diffuse_enabled = True
-
-        properties.bake_in_progress = False
-        properties.cancel_bake = False
-        # Freedom is real
-        properties.busy = False
-        # Refresh the UI
-        context.area.tag_redraw()
-        
-        calculate_elapsed_time()
-
-        if properties.use_compositor:
-            apply_postprocess()
-
-        return {'FINISHED'}
+    if not property.export_enabled:
+        lightmap.pack()
+        if os.path.exists(get_img_filpath()):
+            os.remove(get_img_filpath())
 
 def refresh_ui():
     for window in bpy.context.window_manager.windows:
@@ -365,7 +474,7 @@ class LIGHTMAPBAKER_properties(bpy.types.PropertyGroup):
     export_path: bpy.props.StringProperty(
         name="Export Path",
         description="Path for exporting lightmap image",
-        default="",
+        default="//",
         subtype='FILE_PATH',
     )
 
@@ -415,7 +524,7 @@ class LIGHTMAPBAKER_properties(bpy.types.PropertyGroup):
 
     bake_margin: bpy.props.IntProperty(
         name="Bake Margin",
-        default=6,
+        default=3,
         min=0,
         max=64,
         description="Extend the baked result as a post process filter",
@@ -445,16 +554,40 @@ class LIGHTMAPBAKER_properties(bpy.types.PropertyGroup):
     default=0.0,
     )
 
-    use_compositor: bpy.props.BoolProperty(
-    name="Use Compositor",
+    use_denoise: bpy.props.BoolProperty(
+    name="Denoise",
     description="Apply Post Process filter on the baked texture",
-    default=False,
+    default=True,
     )
 
-    filtering_bilateral_blur: bpy.props.BoolProperty(
+    use_bilateral_blur: bpy.props.BoolProperty(
     name="Bilateral Blur",
     description="",
-    default=False,
+    default=True,
+    )
+
+    bilateral_blur_iterations: bpy.props.IntProperty(
+    name="Bilateral Blur Iterations",
+    description="",
+    default=3,
+    min=1,
+    max=128,
+    )
+
+    bilateral_blur_color_sigma: bpy.props.FloatProperty(
+    name="Bilateral Blur Color Sigma",
+    description="",
+    default=0.1,
+    min=0.01,
+    max=3.0,
+    )
+
+    bilateral_blur_space_sigma: bpy.props.FloatProperty(
+    name="Bilateral Blur Space Sigma",
+    description="",
+    default=1.0,
+    min=0.01,
+    max=30.0,
     )
 
 class LIGHTMAPBAKER_objects_properties(bpy.types.PropertyGroup):
@@ -483,6 +616,7 @@ class LIGHTMAPBAKER_OT_bake(bpy.types.Operator):
             self.report({'ERROR'}, "Nothing to Bake :(")
             return {'CANCELLED'}
 
+        # Checks
         # Check for missing UVs
         objects_to_bake = [obj_name.objects_list for obj_name in context.scene.lightmap_baker_objects]
         objects_missing_uv = [obj_name for obj_name in objects_to_bake if len(bpy.data.objects.get(obj_name).data.uv_layers) < 2]
@@ -539,6 +673,10 @@ class LIGHTMAPBAKER_OT_bake(bpy.types.Operator):
             self.report({'ERROR'}, "Only Cycles render is supported!")
             return {'CANCELLED'}
 
+        if context.scene.lightmap_baker_properties.export_path == "":
+            self.report({'ERROR'}, "Export part is empty")
+            return {'CANCELLED'}
+
         else:
             # Set the active object outside the loop
             bpy.ops.object.mode_set(mode='OBJECT')
@@ -555,7 +693,7 @@ class LIGHTMAPBAKER_OT_bake(bpy.types.Operator):
             # Disable lightmaps preview
             context.scene.lightmap_baker_properties.preview_diffuse_enabled = False
             objects_list = context.scene.lightmap_baker_objects
-            lightmap_preview_diffuse(self, context, objects_list)
+            lightmap_preview_diffuse(context, objects_list)
             create_lightmap_nodes(context, objects_to_bake)
 
             for obj_name in objects_to_bake:
@@ -610,8 +748,6 @@ class LIGHTMAPBAKER_OT_remove_all_from_bake_list(bpy.types.Operator):
         # disable lightmap preview
         context.scene.lightmap_baker_properties.preview_diffuse_enabled = False
         objects_list = context.scene.lightmap_baker_objects
-        for obj in objects_list:
-            print(obj.name)
 
         disconnect_lightmap_to_shader_output(context, objects_list)
 
@@ -642,7 +778,7 @@ class LIGHTMAPBAKER_OT_toggle_lightmap_preview_diffuse(bpy.types.Operator):
 
         context.scene.lightmap_baker_properties.preview_diffuse_enabled = not context.scene.lightmap_baker_properties.preview_diffuse_enabled
         objects_list = context.scene.lightmap_baker_objects
-        lightmap_preview_diffuse(self, context, objects_list)
+        lightmap_preview_diffuse(context, objects_list)
         return {'FINISHED'}
 
 class LIGHTMAPBAKER_OT_add_to_objects_list(bpy.types.Operator):
@@ -827,8 +963,6 @@ class LIGHTMAPBAKER_OT_bake_modal(bpy.types.Operator):
                 obj_data = objects_list[scene.lightmap_baker_properties.objects_index]
                 obj = bpy.data.objects.get(obj_data.objects_list)
 
-                print("Pre-Bake next object")
-
                 bake_diffuse(context, obj)
                 scene.lightmap_baker_properties.bake_in_progress = True
    
@@ -836,12 +970,10 @@ class LIGHTMAPBAKER_OT_bake_modal(bpy.types.Operator):
             elif not self.bake_completed:
                 self.bake_completed = True
                 self.cancel(context)
-                
+            
+
                 handle_bake_completion(context)
 
-                # Automatic lightmap preview
-                objects_list = context.scene.lightmap_baker_objects
-                lightmap_preview_diffuse(self, context, objects_list)
 
             # calculate progress
             progress_value = scene.lightmap_baker_properties.objects_index / len(objects_list)    
@@ -909,7 +1041,6 @@ class LIGHTMAPBAKER_OT_cancel_bake(bpy.types.Operator):
 
         context.scene.lightmap_baker_properties.cancel_bake = True
         return {'FINISHED'}
-
 
 
 classes = [
